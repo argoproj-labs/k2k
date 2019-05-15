@@ -1,0 +1,3 @@
+version: "1.2.20"
+name: Ksonnet to Kustomize converter
+description: A java project that create all the needed Kustomize files and patches based on Intuit base configuration and the local Ksonnet setup.

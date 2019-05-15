@@ -1,0 +1,29 @@
+#bases: 
+#  - "https://github.com/{org}/{repo}//{release-artifact-name}?ref={release-tag}"
+translations:
+  - kind: Ingress
+    name: ${service-name}
+    new-value: ingress
+    translations:
+    - path: 'spec.rules[*].http.paths[*].backend.serviceName'
+      expected-value: ${service-name}
+      new-value: ${service-name}-service
+  - kind: Service
+    name: ${service-name}
+    new-value: service
+  - kind: Deployment
+    name: ${service-name}
+    new-value: deployment
+    translations:
+    - path: 'spec.template.spec.containers[*].name'
+      expected-value: ${service-name}
+      new-value: app 
+  - kind: Ingress
+    name: ${service-name}-appd-ingress
+    new-value: ingress
+  - kind: Service
+    name: ${service-name}-appd-service
+    new-value: service
+  - kind: Deployment
+    name: ${service-name}-appd-deployment
+    new-value: deployment

@@ -1,0 +1,293 @@
+import java.text.SimpleDateFormat
+
+def l1 = 'dev'
+def l2 = 'patterns'
+def serviceName = 'ists'
+def region = 'usw2'
+def iksType = 'preprod'
+def appName = "${l1}-${l2}-${serviceName}-${region}-${iksType}"
+//def appName = 'ists'
+def deployable_branches = ["master"]
+def argocd_server_ppd = "cdp.argocd.tools-k8s-prd.a.intuit.com:443"
+def argocd_server_prd = "cdp.argocd.tools-k8s-prd.a.intuit.com:443"
+def argocd_password_ppd = "argocd-${serviceName}"
+def argocd_password_prd = "argocd-${serviceName}"
+def kson_compnt= "sample"
+def ptNameVersion = "${serviceName}-${UUID.randomUUID().toString().toLowerCase()}"
+def repo = "dev/patterns/ists/service"
+def deploy_repo = "github.intuit.com/dev-patterns/ists-deployment.git"
+def tag = ""
+def registry = "docker.artifactory.a.intuit.com"
+def image = "${repo}/${serviceName}"
+def app_wait_timeout = 1200
+def prd_diff_msg = ""
+def stage_timeout = 20
+def git_timeout = 2
+def preprodOnly = false
+
+def clusterMap = [:]
+clusterMap["prd"] = "https://api-tools-sgmnt-prod-clus-7a3fcq-1154882921.us-west-2.elb.amazonaws.com"
+clusterMap["e2e"] = "https://api-tools-sgmnt-ppd-usw2--s8maps-2116249654.us-west-2.elb.amazonaws.com"
+clusterMap["qal"] = "https://api-tools-sgmnt-ppd-usw2--s8maps-2116249654.us-west-2.elb.amazonaws.com"
+
+
+podTemplate(
+    name: ptNameVersion,
+    label: ptNameVersion,
+    containers: [
+        containerTemplate(name: 'maven', image: 'maven:3.5.3-jdk-8', ttyEnabled: true, command: 'cat', args: ''),
+        containerTemplate(name: 'docker', image: 'docker:17.09', ttyEnabled: true, command: 'cat', args: '' ),
+        //containerTemplate(name: 'argocd', image: 'argoproj/argocd-cli:v0.5.4', ttyEnabled: true, command: 'cat', args: '' ),
+        //containerTemplate(name: 'cdtools', image: 'argoproj/argo-cd-tools:0.1.12', ttyEnabled: true, command: 'cat', args: ''),
+        containerTemplate(name: 'cdtools', image: 'docker.artifactory.a.intuit.com/dev/deploy/cd/argocd-utils:stable', alwaysPullImage: true, ttyEnabled: true, command: 'cat', args: '')
+    ],
+    volumes: [hostPathVolume(hostPath: '/var/run/docker.sock', mountPath: '/var/run/docker.sock')]
+)
+
+{
+    // DO NOT CHANGE
+    def isPR = env.CHANGE_ID != null
+    def branch = env.CHANGE_ID != null ? env.CHANGE_TARGET : env.BRANCH_NAME
+    def dateFormat = new SimpleDateFormat("yyyyMMddHHmm")
+    def date = new Date()
+    def date_tag = dateFormat.format(date)
+
+    // exit gracefully if not the master branch (or, rather, not in deployable_branches)
+    if (!deployable_branches.contains(branch)) {
+        stage("Skipping pipeline") {
+            println "Branch: ${branch} is not part of deployable_branches"
+            println "Skipping pipeline"
+        }
+        currentBuild.result = 'SUCCESS'
+        return
+    }
+
+    node(ptNameVersion) {
+        // DO NOT CHANGE
+        def scmInfo = checkout scm
+        def shortCommit = "${scmInfo.GIT_COMMIT}"[0..6]
+        tag = "${env.BUILD_TAG}-${shortCommit}"
+        def hasReleaseTag = sh(returnStdout: true, script: 'git tag --points-at HEAD').trim().startsWith('release-')
+
+        // Build Stage
+        stage('Build') {
+            withCredentials([usernamePassword(credentialsId: 'twistlock-cpd-scan', passwordVariable: 'SCAN_PASSWORD', usernameVariable: 'SCAN_USER'), usernamePassword(credentialsId: "artifactory-${serviceName}", passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USERNAME'), file(credentialsId: 'ibp-maven-settings-file', variable: 'settings')]) {
+                withEnv(['SCAN_SERVER=https://artifactscan.a.intuit.com:8083']) {
+                    container('maven') {
+                        sh "/bin/ln -sf ${WORKSPACE} /data && BUILD_TAG=${env.BUILD_TAG} mvn -s settings.xml --batch-mode clean deploy"
+                        withCredentials([string(credentialsId: 'codecov_cred_id', variable: 'TOKEN')]) {
+                            sh "curl -s https://codecov.tools.a.intuit.com/bash | bash -s - -t $TOKEN -f app/target/test-results/coverage/jacoco/jacoco.xml"
+                        }
+                        jacoco ()
+                    }
+                }
+            }
+        }                       
+
+        // Handle the PR build
+        if (isPR) {
+            stage("Skipping Deploy") {
+                println "PR Builds: Skipping Deploy"
+            }
+            currentBuild.result = 'SUCCESS'
+            return
+        } // isPR
+        else  {
+            // The first milestone step starts tracking concurrent build order
+            milestone()
+            def env = "qal"
+            // lock the QAL Deploy and Test stages
+            lock(resource: "${appName}-${env}", inversePrecedence: true) {
+                timeout(time:"${stage_timeout}".toInteger(), unit:'MINUTES') {
+                    // The QAL Deploy stage
+                    stage( "Deploy ${env}" ) {
+                        withCredentials([string(credentialsId: "${argocd_password_ppd}", variable: 'ARGOCD_PASS')]) {
+                            container('cdtools') {
+                                println("Deploying to ${appName}")
+                                withCredentials([usernamePassword(credentialsId: 'github-svc-sbseg-ci', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
+                                    dir("deployment-${env}-${tag}") {
+                                        git url: "https://${deploy_repo}", credentialsId: "github-svc-sbseg-ci"
+                                        sh "cd environments/$env; /usr/local/bin/kustomize edit set image ${registry}/${image}:${tag}"
+                                        sh "git config --global user.email ${tag}@${ptNameVersion}"
+                                        sh "git config --global user.name ${tag}"
+                                        sh "git diff"
+                                        sh "git commit -am \"update container for ${env} during build ${tag}\""
+                                        lock("${deploy_repo}") {
+                                            timeout(time:"${git_timeout}".toInteger(), unit:'MINUTES') {
+                                                sh "git pull --rebase https://${GIT_USERNAME}:${GIT_PASSWORD}@${deploy_repo} master"
+                                                sh "git push https://${GIT_USERNAME}:${GIT_PASSWORD}@${deploy_repo} master"
+                                            }
+                                        }
+                                    }
+                                }
+                                sh ("/argocd login ${argocd_server_ppd} --name context --insecure  --username admin --password $ARGOCD_PASS")
+                                def cluster = clusterMap[env]
+                                sh "/argocd app create --name ${appName}-${env} --repo https://${deploy_repo} --path environments/${env}  --dest-server ${cluster} --dest-namespace ${appName}-${env} --upsert"
+                                sh "/argocd app sync ${appName}-${env}"
+                                sh "/argocd app wait ${appName}-${env} --timeout ${app_wait_timeout}"
+                            }
+                            container('cdtools') {
+                                sh "APP_NAME=${appName}-${env} ARGOCD_SERVER=\"https://${argocd_server_ppd}/api/v1\" USERNAME=admin PASSWORD=$ARGOCD_PASS HEALTH_URL_TEMPLATE=https://%s/health/full bash /usr/local/bin/ensure-service-up.sh"
+                            }
+                        }
+                    }
+                    // The QAL Test stage
+                    stage("Test ${env}") {
+                        withCredentials([usernamePassword(credentialsId: 'app_id', passwordVariable: 'APP_SECRET', usernameVariable: 'APP_ID')]) {
+                            container('maven') {
+                                sh "mvn -f test/pom.xml --batch-mode clean test -Dtest.env=${env} -Dtest.app-id=${APP_ID} -Dtest.app-secret=${APP_SECRET}"
+                            }
+                        }
+                    } // Test
+                }
+                milestone()
+            }
+            env = "e2e"
+            // lock the E2E Deploy and Test stages
+            lock(resource: "${appName}-${env}", inversePrecedence: true) {
+                timeout(time:"${stage_timeout}".toInteger(), unit:'MINUTES') {
+                    // The E2E Deploy stage
+                    stage( "Deploy ${env}" ) {
+                        withCredentials([string(credentialsId: "${argocd_password_ppd}", variable: 'ARGOCD_PASS')]) {
+                            container('cdtools') {
+                                println("Deploying to ${appName}")
+                                withCredentials([usernamePassword(credentialsId: 'github-svc-sbseg-ci', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
+                                    dir("deployment-${env}-${tag}") {
+                                        git url: "https://${deploy_repo}", credentialsId: "github-svc-sbseg-ci"
+                                        sh "cd environments/$env; /usr/local/bin/kustomize edit set image ${registry}/${image}:${tag}"
+                                        sh "git config --global user.email ${tag}@${ptNameVersion}"
+                                        sh "git config --global user.name ${tag}"
+                                        sh "git diff"
+                                        sh "git commit -am \"update container for ${env} during build ${tag}\""
+                                        lock("${deploy_repo}") {
+                                            timeout(time:"${git_timeout}".toInteger(), unit:'MINUTES') {
+                                                sh "git pull --rebase https://${GIT_USERNAME}:${GIT_PASSWORD}@${deploy_repo} master"
+                                                sh "git push https://${GIT_USERNAME}:${GIT_PASSWORD}@${deploy_repo} master"
+                                            }
+                                        }
+                                    }
+                                }
+                                sh ("/argocd login ${argocd_server_ppd} --name context --insecure  --username admin --password $ARGOCD_PASS")
+                                def cluster = clusterMap[env]
+                                sh "/argocd app create --name ${appName}-${env} --repo https://${deploy_repo} --path environments/${env}  --dest-server ${cluster} --dest-namespace ${appName}-${env} --upsert"
+                                sh "/argocd app sync ${appName}-${env}"
+                                sh "/argocd app wait ${appName}-${env} --timeout ${app_wait_timeout}"
+                            }
+                            container('cdtools') {
+                                sh "APP_NAME=${appName}-${env} ARGOCD_SERVER=\"https://${argocd_server_ppd}/api/v1\" USERNAME=admin PASSWORD=$ARGOCD_PASS HEALTH_URL_TEMPLATE=https://%s/health/full bash -x /usr/local/bin/ensure-service-up.sh"
+                            }
+                        }
+                    }
+                    // The E2E Test stage
+                    stage("Test ${env}") {
+                        withCredentials([usernamePassword(credentialsId: 'app_id', passwordVariable: 'APP_SECRET', usernameVariable: 'APP_ID')]) {
+                            container('maven') {
+                                sh "mvn -f test/pom.xml --batch-mode clean test -Dtest.env=${env} -Dtest.app-id=${APP_ID} -Dtest.app-secret=${APP_SECRET}"
+                            }
+                        }
+                    } // Test
+                }
+                milestone()
+            }
+            if (preprodOnly) {
+                currentBuild.result = 'SUCCESS'
+                return
+            }
+        }
+    }
+    if (preprodOnly||isPR) {
+        currentBuild.result = 'SUCCESS'
+        return
+    }
+    stage('Deploy approval') {
+        // println "Output of /argocd app diff ${appName}-prd:"
+        // println "${prd_diff_msg}"
+        //timeout(time:1, unit:'DAYS') {
+        //    input "Deploy to PROD?"
+        //    submitter: "oazmon, stsang"
+        //}
+        milestone()
+    }
+    node(ptNameVersion) {
+        env = "prd"
+        // lock the PRD Deploy and Test stages
+        appName = "${l1}-${l2}-${serviceName}-${region}-prod"
+        lock(resource: "${appName}-${env}", inversePrecedence: true) {
+            timeout(time:"${stage_timeout}".toInteger(), unit:'MINUTES') {
+                // The PRD Deploy stage
+                stage( "Deploy ${env}" ) {
+                    withCredentials([string(credentialsId: "${argocd_password_prd}", variable: 'ARGOCD_PASS')]) {
+                        container('cdtools') {
+                            println("Deploying to ${appName}-${env}")
+                            withCredentials([usernamePassword(credentialsId: 'github-svc-sbseg-ci', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
+                                dir("deployment-${env}-${tag}") {
+                                    git url: "https://${deploy_repo}", credentialsId: "github-svc-sbseg-ci"
+                                    sh "cd environments/$env; /usr/local/bin/kustomize edit set image ${registry}/${image}:${tag}"
+                                    sh "git config --global user.email ${tag}@${ptNameVersion}"
+                                    sh "git config --global user.name ${tag}"
+                                    sh "git diff"
+                                    sh "git commit -am \"update container for ${env} during build ${tag}\""
+                                    lock("${deploy_repo}") {
+                                        timeout(time:"${git_timeout}".toInteger(), unit:'MINUTES') {
+                                            sh "git pull --rebase https://${GIT_USERNAME}:${GIT_PASSWORD}@${deploy_repo} master"
+                                            sh "git push https://${GIT_USERNAME}:${GIT_PASSWORD}@${deploy_repo} master"
+                                        }
+                                    }
+                                }
+                            }
+                            sh ("/argocd login ${argocd_server_prd} --name context --insecure  --username admin --password $ARGOCD_PASS")
+                            def cluster = clusterMap[env]
+                            sh "/argocd app create --name ${appName}-${env} --repo https://${deploy_repo} --path environments/${env}  --dest-server ${cluster} --dest-namespace ${appName}-${env} --upsert"
+                            sh "/argocd app sync ${appName}-${env}"
+                            sh "/argocd app wait ${appName}-${env} --timeout ${app_wait_timeout}"
+                        }
+                        container('cdtools') {
+                            sh "APP_NAME=${appName}-${env} ARGOCD_SERVER=\"https://${argocd_server_prd}/api/v1\" USERNAME=admin PASSWORD=$ARGOCD_PASS HEALTH_URL_TEMPLATE=https://%s/health/full bash -x /usr/local/bin/ensure-service-up.sh"
+                        }
+                    }
+                }
+                // The Prd Test stage
+                stage("Test ${env}") {
+//                        withCredentials([usernamePassword(credentialsId: 'prod_app_id', passwordVariable: 'APP_SECRET', usernameVariable: 'APP_ID')]) {
+                            container('maven') {
+                                sh "echo Smoke Test goes Here"
+                            }
+//                        }
+                } // Test 
+            }
+        }
+    }
+}
+
+
+
+//deployGitOps(${env}, ${appName}, ${tag}, ${deploy_repo}, ${kson_compnt}, ${registry}, ${image}, ${tag}, ${ptNameVersion}, ${argocd_server_ppd}, ${argocd_password_ppd})
+//deployGitOps(${env}, ${appName}, ${tag}, ${deploy_repo}, ${kson_compnt}, ${registry}, ${image}, ${tag}, ${ptNameVersion}, ${argocd_server_prd}, ${argocd_password_prd})
+def deployGitOps(Map clusterMap, String env, String appName, String tag, String deploy_repo, String kson_compnt, String registry, String image, String ptNameVersion, String argocd_server, String argocd_password) {
+    return {
+        stage( "Deploy ${env}" ) {
+            withCredentials([string(credentialsId: "argocd_password", variable: 'ARGOCD_PASS')]) {
+                container('cdtools') {
+                    println("Deploying to ${appName}")
+                    withCredentials([usernamePassword(credentialsId: 'github-svc-sbseg-ci', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
+                        dir("deployment-${env}-${tag}") {
+                            git url: "https://${deploy_repo}", credentialsId: "github-svc-sbseg-ci"
+                            sh "cd environments/$env; /usr/local/bin/kustomize edit set image ${registry}/${image}:${tag}"
+                            sh "git config --global user.email ${tag}@${ptNameVersion}"
+                            sh "git config --global user.name ${tag}"
+                            sh "git diff"
+                            sh "git commit -am \"update container for ${env} during build ${tag}\""
+                            sh "git push https://${GIT_USERNAME}:${GIT_PASSWORD}@${deploy_repo} master"
+                        }
+                    }
+                    sh ("/argocd login ${argocd_server} --name context --insecure  --username admin --password $ARGOCD_PASS")
+                    sh "/argocd app sync ${appName}-${env}"
+                    sh "/argocd app wait ${appName}-${env} --timeout ${app_wait_timeout}"
+                }
+                // container('cdtools') {
+                //     sh "APP_NAME=${appName}-${env} ARGOCD_SERVER=\"https://${argocd_server}/api/v1\" USERNAME=admin PASSWORD=$ARGOCD_PASS HEALTH_URL_TEMPLATE=https://%s/health/full bash -x /usr/local/bin/ensure-service-up.sh"
+                // }
+            }
+        }
+    }
+}

@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: appd-service
+spec:
+  ports:
+  - port: 443
+    targetPort: 8443
+  selector:
+    app: service
+  type: NodePort
+---
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: appd-deployment
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: service
+  template:
+    metadata:
+      annotations:
+        iam.amazonaws.com/role: TODO:namespace-name
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8490"
+        prometheus.io/scheme: https
+        prometheus.io/scrape: "true"
+    spec:
+      containers:
+      - env:
+        - name: APP_NAME
+          value: TODO:app-name
+        - name: APP_ENV
+          value: TODO:env-name
+        - name: ASSET_ID
+          value: TODO:assest-id
+        - name: L1
+          value: TODO:l1
+        - name: L2
+          value: TODO:l2
+        - name: APPDYNAMICS_AGENT_TIER_NAME
+          value: app
+        - name: APPDYNAMICS_CONTROLLER_HOST_NAME
+          value: TODO:appd host
+        - name: APPDYNAMICS_AGENT_ACCOUNT_NAME
+          value: TODO:appd account
+        image: ' '
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /health/full
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 90
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: app
+        ports:
+        - containerPort: 8443
+          name: service
+        - containerPort: 8490
+          name: metrics
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health/full
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 75
+          periodSeconds: 5
+          successThreshold: 3
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 1
+            memory: 4096M
+          requests:
+            cpu: 1
+            memory: 4096M
+        volumeMounts:
+        - mountPath: /etc/secrets
+          name: secrets
+      initContainers:
+      - args:
+        - -c
+        - /usr/local/bin/segment-app-init secrets get
+        command:
+        - /bin/sh
+        env:
+        - name: APP_NAME
+          value: TODO:app-name
+        - name: APP_ENV
+          value: TODO:env-name
+        - name: ASSET_ID
+          value: "000000000000"
+        - name: APPDYNAMICS_AGENT_ACCOUNT_NAME
+          value: TODO:appd-account
+        - name: SEGMENT_CLUSTER_ROLE_ARN
+          value: TODO:appd-cluster-role
+        - name: SEGMENT_IDPS_APPLIANCE
+          value: TODO:idps-appliance
+        - name: SEGMENT_IDPS_POLICY_ID
+          value: TODO:idps-policy-id
+        image: TODO:image-id
+        name: segment-app-init
+        volumeMounts:
+        - mountPath: /etc/secrets
+          name: secrets
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: secrets
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  annotations:
+    alb.ingress.kubernetes.io/backend-protocol: HTTPS
+    alb.ingress.kubernetes.io/certificate-arn: TODO:certificate-ARN
+    alb.ingress.kubernetes.io/healthcheck-path: /health/full
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTPS
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/security-groups: iks-intuit-cidr-ingress-tcp-443, iks-intuit-api-gw-ingress-preprod-tcp-443,
+      iks-intuit-app-alb-custom-ingress, iks-intuit-ibp-ingress-tcp-443
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS-1-2-2017-01
+    alb.ingress.kubernetes.io/subnets: IngressSubnetAz1, IngressSubnetAz2, IngressSubnetAz3
+    kubernetes.io/ingress.class: alb
+  name: ingress
+spec:
+  rules:
+  - host: TODO:alb-dns-name
+    http:
+      paths:
+      - backend:
+          serviceName: appd-service
+          servicePort: 443
+        path: /*

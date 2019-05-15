@@ -1,0 +1,145 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    ksonnet.io/component: sample
+  name: ists
+spec:
+  ports:
+  - port: 443
+    targetPort: 8443
+  selector:
+    app: ists
+  type: NodePort
+---
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  labels:
+    ksonnet.io/component: sample
+  name: ists
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ists
+  template:
+    metadata:
+      annotations:
+        iam.amazonaws.com/role: k8s-dev-patterns-ists-usw2-ppd-qal
+      labels:
+        app: ists
+    spec:
+      containers:
+      - env:
+        - name: APP_NAME
+          value: ists
+        - name: APP_ENV
+          value: qal
+        - name: L1
+          value: dev
+        - name: L2
+          value: patterns
+        - name: APPDYNAMICS_AGENT_TIER_NAME
+          value: app
+        - name: APPDYNAMICS_CONTROLLER_HOST_NAME
+          value: intuit-sbg-dev.saas.appdynamics.com
+        - name: APPDYNAMICS_AGENT_ACCOUNT_NAME
+          value: intuit-sbg-dev
+        image: docker.artifactory.a.intuit.com/dev/patterns/ists/service/ists:jenkins-dev-patterns-ists-ists-master-229-7a81c67
+        livenessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /health/full
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 300
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: ists
+        ports:
+        - containerPort: 8443
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health/full
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 200
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 1
+            memory: 4096M
+          requests:
+            cpu: 1
+            memory: 4096M
+        volumeMounts:
+        - mountPath: /etc/secrets
+          name: secrets
+        - mountPath: /etc/k8s-secrets
+          name: k8s-secret-volume
+          readOnly: true
+      initContainers:
+      - args:
+        - -c
+        - /usr/local/bin/segment-app-init secrets get
+        command:
+        - /bin/sh
+        env:
+        - name: APP_NAME
+          value: ists
+        - name: APP_ENV
+          value: qal
+        - name: APPDYNAMICS_AGENT_ACCOUNT_NAME
+          value: intuit-sbg-dev
+        - name: SEGMENT_CLUSTER_ROLE_ARN
+          value: arn:aws:iam::795188202216:role/shared.tools-sgmnt-ppd-usw2.cluster.k8s.local
+        - name: SEGMENT_IDPS_APPLIANCE
+          value: bu-segments-pre-production-8vwhtx.pd.idps.a.intuit.com
+        - name: SEGMENT_IDPS_POLICY_ID
+          value: p-w2x5u0hcwbt0
+        image: docker.artifactory.a.intuit.com/dev/containers/segment-app-init/service/segment-app-init:master-29-dc47b83
+        name: segment-app-init
+        volumeMounts:
+        - mountPath: /etc/secrets
+          name: secrets
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: secrets
+      - name: k8s-secret-volume
+        secret:
+          secretName: intuit-application-id
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  annotations:
+    alb.ingress.kubernetes.io/backend-protocol: HTTPS
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-west-2:795188202216:certificate/d8f8bbc9-4880-4744-94ff-166e36144735
+    alb.ingress.kubernetes.io/healthcheck-path: /health/full
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/security-groups: iks-intuit-cidr-ingress-tcp-443, iks-intuit-api-gw-ingress-preprod-tcp-443,
+      iks-intuit-app-alb-custom-ingress
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS-1-2-2017-01
+    alb.ingress.kubernetes.io/subnets: IngressSubnetAz1, IngressSubnetAz2, IngressSubnetAz3
+    kubernetes.io/ingress.class: alb
+  labels:
+    app: ists
+    ksonnet.io/component: sample
+  name: ists
+spec:
+  rules:
+  - host: dev-patterns-qal-ists.tools-sgmnt-ppd.a.intuit.com
+    http:
+      paths:
+      - backend:
+          serviceName: ists
+          servicePort: 443
+        path: /

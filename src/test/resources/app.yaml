@@ -1,0 +1,36 @@
+apiVersion: 0.1.0
+environments:
+  default:
+    destination:
+      namespace: default
+      server: https://192.168.99.100:8443
+    k8sVersion: v1.10.0
+    path: default
+  qal:
+    destination:
+      namespace: dev-patterns-ists-usw2-ppd-qal
+      server: https://api-tools-sgmnt-ppd-usw2--s8maps-2116249654.us-west-2.elb.amazonaws.com
+    k8sVersion: v1.10.0
+    path: qal
+  e2e:
+    destination:
+      namespace: dev-patterns-ists-usw2-ppd-e2e
+      server: https://api-tools-sgmnt-ppd-usw2--s8maps-2116249654.us-west-2.elb.amazonaws.com
+    k8sVersion: v1.10.0
+    path: e2e
+  prd:
+    destination:
+      namespace: dev-patterns-ists-usw2-prd-prd
+      server: https://api-tools-sgmnt-prod-clus-7a3fcq-1154882921.us-west-2.elb.amazonaws.com
+    k8sVersion: v1.10.0
+    path: prd
+kind: ksonnet.io/app
+name: sample-app
+registries:
+  incubator:
+    gitVersion:
+      commitSha: 40285d8a14f1ac5787e405e1023cf0c07f6aa28c
+      refSpec: master
+    protocol: github
+    uri: github.com/ksonnet/parts/tree/master/incubator
+version: 0.0.1
