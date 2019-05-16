@@ -122,15 +122,15 @@ class K2KArgoCd2Kustomize implements Callable<Void> {
     @Option(names = { "-h", "--help" }, usageHelp = true)
     boolean help;
 
-    @Parameters(index = "0", description = "The path to the Jenkinsfile in the code repo.")
-    String jenkinsfilePath;
+    @Option(names = { "-g" }, description = "the gitrepo where argocd reads the config. Defaults to the current repo.")
+    String gitRepo;
 
     @Parameters(index = "1", arity = "0..1", description = "The name of the environment to update.")
     String targetEnv = null;
 
     @Override
     public Void call() throws Exception {
-        new ArgoCd(jenkinsfilePath).pushUpdatesNow(Action.TO_KUSTOMIZE, targetEnv);
+        new ArgoCd(gitRepo).pushUpdatesNow(Action.TO_KUSTOMIZE, targetEnv);
         return null;
     }
 
@@ -144,15 +144,15 @@ class K2KArgoCd2Ksonnet implements Callable<Void> {
     @Option(names = { "-h", "--help" }, usageHelp = true)
     boolean help;
 
-    @Parameters(index = "0", description = "The path to the Jenkinsfile in the code repo.")
-    String jenkinsfilePath;
-
+    @Option(names = { "-g" }, description = "the gitrepo where argocd reads the config. Defaults to the current repo.")
+    String gitRepo;
+    
     @Parameters(index = "1", arity = "0..1", description = "The name of the environment to update.")
     String targetEnv = null;
 
     @Override
     public Void call() throws Exception {
-        new ArgoCd(jenkinsfilePath).pushUpdatesNow(Action.TO_KSONNET, targetEnv);
+        new ArgoCd(gitRepo).pushUpdatesNow(Action.TO_KSONNET, targetEnv);
         return null;
     }
 

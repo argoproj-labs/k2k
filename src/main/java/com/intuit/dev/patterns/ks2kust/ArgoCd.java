@@ -1,44 +1,40 @@
 package com.intuit.dev.patterns.ks2kust;
 
 import java.io.IOException;
-import java.util.Arrays;
+import java.nio.charset.Charset;
 import java.util.Map;
 import java.util.Map.Entry;
+
+import org.apache.commons.io.IOUtils;
 
 import com.intuit.dev.patterns.ks2kust.JenkinsfileTranslator.EnvironmentData;
 
 public class ArgoCd {
     public static enum Action {
-        TO_KSONNET,
-        TO_KUSTOMIZE
+        TO_KSONNET, TO_KUSTOMIZE
     };
-    
-    private String jenkinsfilePath;
 
-    public ArgoCd(String jenkinsfilePath) {
-        this.jenkinsfilePath = jenkinsfilePath;
+    private String gitRepo;
+
+    public ArgoCd(String gitRepo) throws IOException {
+        this.gitRepo = gitRepo;
+        if (this.gitRepo == null || gitRepo.isEmpty()) {
+            final String[] cmd = new String[] { "sh", "-c",
+                    "git remote -v | grep '\\(push\\)' | cut -d'/' -f4-5 | cut -d'.' -f1" };
+            Process process = new ProcessBuilder(cmd).start();
+            this.gitRepo = IOUtils.toString(process.getInputStream(), Charset.defaultCharset());
+        }
     }
 
     private void runCommand(String[] command) throws IOException {
-        System.out.println(Arrays.toString(command));
+        System.out.println(String.join(" ", command));
         ProcessBuilder builder = new ProcessBuilder(command) //
                 .inheritIO();
         builder.start();
     }
 
     public void pushUpdatesNow(Action action, String targetEnvName) throws IOException {
-        Map<String, String> parameterMap = JenkinsfileTranslator.getParameterMap(jenkinsfilePath);
         Map<String, EnvironmentData> environmentMap = JenkinsfileTranslator.getEnvironmentMap();
-        
-        String argocdServer = parameterMap.get("argocd_server");
-        if(argocdServer == null) {
-            throw new IOException("Unable to locate Argo CD Server destination in Jenkinsfile.");
-        }
-
-        // login
-        runCommand(new String[] { //
-                "/usr/local/bin/argocd", "login", parameterMap.get("argocd_server"), "--sso"//
-        });
 
         int envCount = 0;
         for (Entry<String, EnvironmentData> entry : environmentMap.entrySet()) {
@@ -50,13 +46,13 @@ public class ArgoCd {
             String cluster = entry.getValue().getCluster();
             String namespace = entry.getValue().getNamespace();
 
-            switch(action) {
+            switch (action) {
             case TO_KUSTOMIZE:
                 // tell argocd to switch to Kustomize NOW
                 runCommand(new String[] { //
                         "/usr/local/bin/argocd", "app", "create", //
                         "--name", namespace, //
-                        "--repo", "https://" + parameterMap.get("deploy_repo"), //
+                        "--repo", "https://" + gitRepo, //
                         "--path", "environments/" + envName, //
                         "--dest-server", cluster, //
                         "--dest-namespace", namespace, //
@@ -68,7 +64,7 @@ public class ArgoCd {
                 runCommand(new String[] { //
                         "/usr/local/bin/argocd", "app", "create", //
                         "--name", namespace, //
-                        "--repo", "https://" + parameterMap.get("deploy_repo"), //
+                        "--repo", "https://" + gitRepo, //
                         "--path", ".", //
                         "--env", envName, //
                         "--upsert" //

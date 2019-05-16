@@ -62,7 +62,7 @@ public class ConfigTest {
     public void getBases() throws Exception {
         Config sut = new Config(null, "my-service");
         List<String> list = sut.getBases();
-        assertEquals("[https://github.intuit.com/dev-patterns/intuit-kustomize//intuit-service-appd-base?ref=v0.0.4]", list.toString());
+        assertEquals("[]", list.toString());
     }
 
 }
