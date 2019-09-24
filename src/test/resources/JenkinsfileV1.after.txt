@@ -41,7 +41,7 @@ podTemplate(
         //containerTemplate(name: 'cdtools', image: 'argoproj/argo-cd-tools:0.1.12', ttyEnabled: true, command: 'cat', args: ''),
         containerTemplate(name: 'cdtools', image: 'docker.artifactory.a.intuit.com/dev/deploy/cd/argocd-utils:stable', alwaysPullImage: true, ttyEnabled: true, command: 'cat', args: '')
     ],
-    volumes: [hostPathVolume(hostPath: '/var/run/docker.sock', mountPath: '/var/run/docker.sock')]
+    volumes: [hostPathVolume(hostPath: '/var/run/dind/docker.sock', mountPath: '/var/run/docker.sock')]
 )
 
 {
